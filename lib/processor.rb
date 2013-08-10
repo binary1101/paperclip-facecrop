@@ -17,14 +17,16 @@ module Paperclip
     end
   
     def initialize(file, options = {}, attachment = nil)
+
       super(file, options, attachment)
     
-      
       raise "No detectors were defined" if @@detectors.nil?
       
       faces_regions = []
       faces_parts_regions = []
       
+
+      #beginning = Time.now
       @@detectors.each do |detector|
         begin
           faces_regions += detector.detect(file.path)
@@ -33,9 +35,10 @@ module Paperclip
           Rails.logger.error(e)
         end
       end
-      
+      #puts "Time elapsed #{Time.now - beginning} seconds"      
       
       x_coords, y_coords, widths, heights = [], [], [], []
+      x_center = 0, y_center = 0
     
       faces_regions.each do |region|
         x_coords << region.top_left.x << region.bottom_right.x
@@ -43,24 +46,19 @@ module Paperclip
         widths << region.width
         heights << region.height
       end
-          
-      
+           
       @has_faces = faces_regions.size > 0
      
       if @has_faces
         @top_left_x = x_coords.min
         @top_left_y = y_coords.min
         @bottom_right_x = x_coords.max
-        @bottom_right_y = y_coords.max
-        
-        
-        
-        #puts @top_left_x.to_s
-        
+        @bottom_right_y = y_coords.max       
+
         # average faces areas
         average_face_width  = widths.sum / widths.size
         average_face_height = heights.sum / heights.size
-      
+
         # calculating the surrounding margin of the area that covers all the found faces
         #
       
@@ -69,18 +67,13 @@ module Paperclip
         @bottom_right_x += average_face_width / 1.2
       
         
-        
         # new height
-        #puts ":::#{@top_left_x}---#{average_face_width}"
-        #return
         
         @top_left_y -= average_face_height / 1.2
         @bottom_right_y += average_face_height / 1.6
 
         calculate_bounds
-      
-        
-        
+
         # if the new area is smaller than the target geometry, it's scaled so the final image isn't resampled
         #
         if @faces_width < @target_geometry.width 
@@ -106,7 +99,27 @@ module Paperclip
         end
         
         @faces_height = @faces_width if @target_geometry.height == 0
-      
+
+
+        @x_center = @top_left_x + (@bottom_right_x - @top_left_x)/2
+        @y_center = @top_left_y + (@bottom_right_y - @top_left_y)/2
+
+        if @current_geometry.width < @current_geometry.height 
+          @top_left_x = 0
+          @bottom_right_x = @current_geometry.width
+          @top_left_y = @y_center - @current_geometry.width/2
+          @bottom_right_y = @y_center + @current_geometry.width/2
+
+          calculate_bounds
+        else 
+          @top_left_y = 0
+          @bottom_right_y = @current_geometry.height
+          @top_left_x = @x_center - @current_geometry.height/2
+          @bottom_right_x = @x_center + @current_geometry.height/2
+
+          calculate_bounds
+        end
+
         @current_geometry = Paperclip::Geometry.new(@faces_width, @faces_height)
         
         if @@debug
@@ -117,11 +130,10 @@ module Paperclip
           parameters << ":source"
           parameters << ":dest"
           parameters = parameters.flatten.compact.join(" ").strip.squeeze(" ")
-                    
+          
           Paperclip.run("convert", parameters, :source => "#{File.expand_path(file.path)}", :dest => "#{File.expand_path(file.path)}")
         end
-        
-        
+    
       end
     end
   
@@ -134,9 +146,9 @@ module Paperclip
       
       trans = []
       trans << "-crop" << %["#{faces_crop}"] << "+repage"
-      trans << "-resize" << %["#{scale}"] unless scale.nil? || scale.empty?
-      trans << "-crop" << %["#{crop}"] << "+repage" if crop
-      
+      trans << "-resize" << %["#{@target_geometry.width}x#{@target_geometry.height}"] unless scale.nil? || scale.empty?
+      #trans << "-crop" << %["#{crop}"] << "+repage" if crop
+
       trans
     end
   
@@ -145,11 +157,24 @@ module Paperclip
     # calculate_bounds
     #
     def calculate_bounds
-      @top_left_x = 0 if @top_left_x < 0      
-      @bottom_right_x = @current_geometry.width if @bottom_right_x > @current_geometry.width
+      if @top_left_x < 0      
+        @bottom_right_x = @bottom_right_x - @top_left_x
+        @top_left_x = 0
+      end
 
-      @top_left_y = 0 if @top_left_y < 0
-      @bottom_right_y = @current_geometry.height if @bottom_right_y > @current_geometry.height
+      if @bottom_right_x > @current_geometry.width
+        @top_left_x = @top_left_x - (@bottom_right_x - @current_geometry.width)
+        @bottom_right_x = @current_geometry.width 
+      end
+
+      if @top_left_y < 0
+        @bottom_right_y = @bottom_right_y - @top_left_y
+        @top_left_y = 0 
+      end
+      if @bottom_right_y > @current_geometry.height
+        @top_left_y = @top_left_y - (@bottom_right_y - @current_geometry.height)
+        @bottom_right_y = @current_geometry.height 
+      end
     
       @faces_width = @bottom_right_x - @top_left_x
       @faces_height = @bottom_right_y - @top_left_y
